@@ -8,7 +8,6 @@ const app = express();
 const port = 5000;
 const needle = require('needle');
 
-const natural = require('natural');
 const punctuation = require('./tools/punctuation');
 const rt = require('./tools/remove-twitter-characters');
 const stopwords = require('nltk-stopwords');
@@ -16,10 +15,10 @@ const stopwords = require('nltk-stopwords');
 const logger = require('morgan');
 const responseTime = require('response-time')
 const path = require('path');
-const apiRouter = require('./routes/api');
 var s3Manager = require('./lib/s3_manager');
 var constants = require('./lib/shared_constants');
 var AWS = require("aws-sdk");
+const redisClient = require ('./lib/redis_client');
 
 //In an ideal world I would put API keys into an env file but for the sake of testing these are left in.
 const tokenTwitter = "AAAAAAAAAAAAAAAAAAAAAKDRTQEAAAAAeZgQFpmbFgJWcU0%2BjLOXLTYZTkM%3DogOa2iUjabE2lRXN4kzDbxdJ0q57aAydkWXx7dHu3Lz6WN3XDY";
@@ -59,14 +58,23 @@ app.get('/api/hello', (req, res) => {
 //API Calls
 app.use('/api/twitter', async (req, res) => {
 
-  console.log(`Sending request value ${req.body.post} to Twitter search API...`);
+  const query = (req.body.post)
+  const redisKey = `twitter${query}`;
+
+  // Construct the wiki URL and S3 key
+  const s3Key = `twitter-${query}`;
+  const s3Params = { Bucket: constants.S3_DEFAULT_BUCKET_NAME, Key: s3Key};
   
+  // Construct the wiki URL and key
+  const searchUrl = `${constants.WIKIPEDIA_API_URL}${query}`;
+
   // Twitter Call
   const params = {
     'query': req.body.post,
     'tweet.fields': 'author_id'
   }
 
+  console.log(`Sending request value ${req.body.post} to Twitter search API...`);
   return redisClient.get(redisKey, (err, result) => {
     if (result) {
       // Serve from Cache
@@ -75,7 +83,7 @@ app.use('/api/twitter', async (req, res) => {
     }
     else
     {
-      return new AWS.S3({apiVersion: constants.S3_API_VERSION}).getObject(params, (err, response) => {
+      return new AWS.S3({apiVersion: constants.S3_API_VERSION}).getObject(s3Params, async (err, response) => {
         if (response) {
           // Serve from S3
           const responseJSON = JSON.parse(response.Body);
@@ -85,27 +93,33 @@ app.use('/api/twitter', async (req, res) => {
         } 
         else
         {
-          // Serve from Wikipedia API and store in cache
-          twitterRes =  await needle('get', endpointUrlTwitter, params, {
+          // Serve from Twitter API and store in S3
+          twitterRes = await needle('get', endpointUrlTwitter, params, {
             headers: {
               "User-Agent": req.body,
               "authorization": `Bearer ${tokenTwitter}`
             }
           })
 
-          // Send Twitter Data to IBM Tone Analyzer
           console.log('Sending Twitter Response to Tone Analyser...');
           console.log(`Number of Responses from Twitter: ${twitterRes.body.data.length}`)  
-          analysed =  getToneData(twitterRes);
-          console.log("Sending Tone Analyser Data to Client...");  
-
-          const responseJSON = twitterRes;
-          redisClient.setex(redisKey, 3600, JSON.stringify({ source: 'Redis Cache', ...responseJSON, }));
+          analysed =  await getToneData(twitterRes);
+          console.log("Sending Tone Analyser Data to Client...");
+          // Send Twitter Data to IBM Tone Analyzer
+            
+          const responseJSON = analysed;
+          const body = JSON.stringify({ source: 'S3 Bucket', ...responseJSON});
+          const objectParams = {Bucket: constants.S3_DEFAULT_BUCKET_NAME, Key: s3Key, Body: body};
+          const uploadPromise = new AWS.S3({apiVersion: constants.S3_API_VERSION}).putObject(objectParams).promise();
+          uploadPromise.then(function(data) {
+              console.log("Successfully uploaded data to " + constants.S3_DEFAULT_BUCKET_NAME + "/" + s3Key);
+          });
           return res.status(200).json({ source: 'Twitter API', ...responseJSON, });
         }
       });
     }
   });
+  
 })
 
 app.post('/api/world', (req, res) =>{
@@ -219,5 +233,4 @@ function AverageSentiment(watsonRes){
   averageSentiment.tentative = sentiments[6];
 
   return averageSentiment
-  
-} 
+}
