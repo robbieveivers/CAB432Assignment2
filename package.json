@@ -11,6 +11,7 @@
     "chart.js": "^3.5.1",
     "express": "^4.17.1",
     "ibm-watson": "^6.2.0",
+    "morgan": "^1.10.0",
     "natural": "^5.1.1",
     "needle": "^3.0.0",
     "nltk-stopwords": "^1.0.3",

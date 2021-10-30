@@ -13,6 +13,14 @@ const punctuation = require('./tools/punctuation');
 const rt = require('./tools/remove-twitter-characters');
 const stopwords = require('nltk-stopwords');
 
+const logger = require('morgan');
+const responseTime = require('response-time')
+const path = require('path');
+const apiRouter = require('./routes/api');
+var s3Manager = require('./lib/s3_manager');
+var constants = require('./lib/shared_constants');
+var AWS = require("aws-sdk");
+
 //In an ideal world I would put API keys into an env file but for the sake of testing these are left in.
 const tokenTwitter = "AAAAAAAAAAAAAAAAAAAAAKDRTQEAAAAAeZgQFpmbFgJWcU0%2BjLOXLTYZTkM%3DogOa2iUjabE2lRXN4kzDbxdJ0q57aAydkWXx7dHu3Lz6WN3XDY";
 const IBM_API_KEY = 'YStUq30XIWxWUr3VHtRa_dejJIZGz3LQgmVupPkGkMZf';
@@ -27,9 +35,22 @@ const toneAnalyzer = new ToneAnalyzerV3({
   url: IBM_URL,
 });
 
+//Load views engine
+app.set('views', path.join(__dirname, 'views'));
+app.set('view engine', 'pug');
 
-app.use(bodyParser.json());
+// Load required files
+app.use(logger('tiny'));
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(responseTime());
+
+//aws config
+AWS.config.update({region: constants.AWS_REGION});
+AWS.config.credentials = new AWS.SharedIniFileCredentials({profile: constants.AWS_PROFILE_NAME});
+
+//Init bucket
+new s3Manager().initBucket(constants.S3_DEFAULT_BUCKET_NAME);
 
 app.get('/api/hello', (req, res) => {
   res.send({ express: 'Server Is Online' });
@@ -46,19 +67,45 @@ app.use('/api/twitter', async (req, res) => {
     'tweet.fields': 'author_id'
   }
 
-  twitterRes = await needle('get', endpointUrlTwitter, params, {
-      headers: {
-        "User-Agent": req.body,
-        "authorization": `Bearer ${tokenTwitter}`
-      }
-  })
+  return redisClient.get(redisKey, (err, result) => {
+    if (result) {
+      // Serve from Cache
+      const resultJSON = JSON.parse(result);
+      return res.status(200).json(resultJSON);
+    }
+    else
+    {
+      return new AWS.S3({apiVersion: constants.S3_API_VERSION}).getObject(params, (err, response) => {
+        if (response) {
+          // Serve from S3
+          const responseJSON = JSON.parse(response.Body);
+          // Store in Redis
+          redisClient.setex(redisKey, 3600, JSON.stringify({ source: 'Redis Cache', ...responseJSON, })); 
+          return res.status(200).json(responseJSON);
+        } 
+        else
+        {
+          // Serve from Wikipedia API and store in cache
+          twitterRes =  await needle('get', endpointUrlTwitter, params, {
+            headers: {
+              "User-Agent": req.body,
+              "authorization": `Bearer ${tokenTwitter}`
+            }
+          })
 
-  // Send Twitter Data to IBM Tone Analyzer
-  console.log('Sending Twitter Response to Tone Analyser...');
-  console.log(`Number of Responses from Twitter: ${twitterRes.body.data.length}`)
-  
-  res.send(await getToneData(twitterRes));
-  console.log("Sending Tone Analyser Data to Client...");   
+          // Send Twitter Data to IBM Tone Analyzer
+          console.log('Sending Twitter Response to Tone Analyser...');
+          console.log(`Number of Responses from Twitter: ${twitterRes.body.data.length}`)  
+          analysed =  getToneData(twitterRes);
+          console.log("Sending Tone Analyser Data to Client...");  
+
+          const responseJSON = twitterRes;
+          redisClient.setex(redisKey, 3600, JSON.stringify({ source: 'Redis Cache', ...responseJSON, }));
+          return res.status(200).json({ source: 'Twitter API', ...responseJSON, });
+        }
+      });
+    }
+  });
 })
 
 app.post('/api/world', (req, res) =>{
