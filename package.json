@@ -11,9 +11,12 @@
     "chart.js": "^3.5.1",
     "express": "^4.17.1",
     "ibm-watson": "^6.2.0",
+    "natural": "^5.1.1",
     "needle": "^3.0.0",
+    "nltk-stopwords": "^1.0.3",
     "react-chartjs-2": "^3.0.5",
     "react-scripts": "^4.0.3",
+    "remove-punctuation": "0.0.4",
     "yarn": "^1.22.11"
   },
   "devDependencies": {

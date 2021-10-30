@@ -8,6 +8,10 @@ const app = express();
 const port = 5000;
 const needle = require('needle');
 
+const natural = require('natural');
+const punctuation = require('./tools/punctuation');
+const rt = require('./tools/remove-twitter-characters');
+const stopwords = require('nltk-stopwords');
 
 //In an ideal world I would put API keys into an env file but for the sake of testing these are left in.
 const tokenTwitter = "AAAAAAAAAAAAAAAAAAAAAKDRTQEAAAAAeZgQFpmbFgJWcU0%2BjLOXLTYZTkM%3DogOa2iUjabE2lRXN4kzDbxdJ0q57aAydkWXx7dHu3Lz6WN3XDY";
@@ -68,8 +72,13 @@ app.listen(port, () => console.log(`Listening on port ${port}`));
 async function getToneData(twitterRes){
   let watsonRes = []
   for(let i = 0; i < twitterRes.body.data.length; i++){
-    const toneParams = {
-      toneInput:  {'text': twitterRes.body.data[i].text},
+    
+    tweet = TweetPreprocessing(twitterRes.body.data[i].text);
+    console.log(`Tweet after processing: ${tweet}`)
+    
+    const toneParams = 
+    {
+      toneInput:  {'text': tweet},
       content_type: 'application/json',
     };
     
@@ -92,6 +101,18 @@ async function getToneData(twitterRes){
 
 function WatsonAPICall(toneParams){
   return toneAnalyzer.tone(toneParams)
+}
+
+function TweetPreprocessing(tweet){
+  var english = stopwords.load('english');
+
+  tweet = tweet.replace(/https?.*?(?= |$)/g, "");
+  tweet = punctuation(tweet);
+  tweet = stopwords.remove(tweet, english)
+  tweet = tweet.toLowerCase();
+  tweet = rt(tweet)
+   
+  return tweet;
 }
 
 // Formatting API Call For Display
